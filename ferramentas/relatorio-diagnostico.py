@@ -39,6 +39,19 @@ def analisa(d):
     val = (lucro_ano * mult - divliq) if lucro_ano > 0 else 0
     faixa = (max(0, lucro_ano * max(1.5, mult - .5) - divliq), max(0, lucro_ano * (mult + .5) - divliq)) if lucro_ano > 0 else (0, 0)
     pot = max(0, lucro_ano * 4 - divliq) if lucro_ano > 0 else 0
+    # Fluxo de caixa descontado (FCD): lucro de verdade projetado por 5 anos + perpetuidade, trazido a valor de hoje
+    taxa = .35 - .02 * nota_org        # 35% ao ano (desorganizada) a 25% (organizada): juros de mercado + risco de pequena empresa
+    cresc, perp, anos = .05, .035, 5   # crescimento nos 5 anos e na perpetuidade (perto da inflação)
+    def fcd(r):
+        if lucro_ano <= 0: return None
+        fl = [lucro_ano * (1 + cresc) ** t for t in range(1, anos + 1)]
+        vp = [f / (1 + r) ** t for t, f in enumerate(fl, 1)]
+        vt = fl[-1] * (1 + perp) / (r - perp); vpvt = vt / (1 + r) ** anos
+        return dict(fl=fl, vp=vp, vt=vt, vpvt=vpvt, ev=sum(vp) + vpvt, val=max(0, sum(vp) + vpvt - divliq))
+    dcf = fcd(taxa); val_mult = val
+    if dcf:                            # valor final = média dos dois métodos; faixa cobre os dois (FCD com taxa +-3 pontos)
+        val = (val_mult + dcf['val']) / 2
+        faixa = (min(faixa[0], fcd(taxa + .03)['val']), max(faixa[1], fcd(taxa - .03)['val']))
     prob = []
     def add(peso, titulo, texto, acao, projeto): prob.append((peso, titulo, texto, acao, projeto))
     if sobra < 0: add(100, 'O mês fecha no vermelho', f'Depois de pagar o negócio, você e as parcelas, faltam {R(-sobra)} por mês. Esse buraco está sendo coberto pelo caixa, por dívida ou pelo seu bolso.', 'Rever preço e custos antes de qualquer outro passo.', 'Precificação')
@@ -55,7 +68,7 @@ def analisa(d):
     obj = d.get('Seu objetivo para os próximos 12 meses', '')
     proj = 'Valuation' if obj in ('Vender a empresa', 'Trazer um sócio ou investidor', 'Saber quanto a empresa vale') else prob[0][4]
     return dict(fat=fat, cmv=cmv, fix=fix, imp=imp, pro=pro, cx=cx, div=div, parc=parc, mc=mc, mcp=mcp, op=op, sobra=sobra, pe=pe, folego=folego,
-                org=org, mult=mult, lucro_ano=lucro_ano, val=val, faixa=faixa, pot=pot, prob=prob[:3], proj=proj)
+                org=org, mult=mult, lucro_ano=lucro_ano, val=val, val_mult=val_mult, dcf=dcf, taxa=taxa, cresc=cresc, perp=perp, divliq=divliq, faixa=faixa, pot=pot, prob=prob[:3], proj=proj)
 
 PROJ = {'Valuation': 'Avaliação completa do quanto a empresa vale, com cenários e o que fazer para aumentar esse valor.',
         'Precificação': 'Cálculo do custo e da margem de cada produto ou serviço, e a tabela de preços certa para lucrar.',
@@ -76,43 +89,61 @@ def gera(d, a, nota=''):
     cards = ''.join(f'<div class="ind {c}"><div class="k">{k}</div><div class="v">{v}</div><div class="e">{e}</div></div>' for k, v, e, c in ind)
     orgs = ''.join(f'<tr><td>{html.escape(k)}?</td><td class="{ {"Sim":"ok","Mais ou menos":"meio"}.get(v,"nao") }">{html.escape(v)}</td></tr>' for k, v in a['org'].items())
     probs = ''.join(f'<div class="prob"><div class="n">{i}</div><div><b>{t}</b><p>{x}</p><p class="acao">O que fazer: {ac}</p></div></div>' for i, (_, t, x, ac, _p) in enumerate(a['prob'], 1))
-    val = (f'<div class="valor">{R(a["val"])}</div><p>Faixa provável: {R(a["faixa"][0])} a {R(a["faixa"][1])}. Lucro de verdade do ano ({R(a["lucro_ano"])}) vezes um múltiplo de ' + f'{a["mult"]:.1f}'.replace('.', ',') + 'x' +
-           (f', menos a dívida líquida de {R(max(0,a["div"]-a["cx"]))}' if a['div'] > a['cx'] else '') + '.</p>' +
-           (f'<p class="ganho">Organizado (múltiplo de 4x), o mesmo lucro valeria {R(a["pot"])}.</p>' if a['pot'] > a['val'] else '')) if a['lucro_ano'] > 0 else \
-          '<p>Pagando alguém no seu lugar, hoje o negócio não sobra lucro. Antes de falar em valor, o foco é margem e custo.</p>'
+    if a['lucro_ano'] > 0:
+        f = a['dcf']; pc = lambda v: f'{v*100:.0f}%'.replace('.', ',') if v*100 == int(v*100) else P(v)
+        div_txt = f', menos a dívida líquida de {R(a["divliq"])}' if a['divliq'] > 0 else ''
+        cab = ''.join(f'<th>Ano {t}</th>' for t in range(1, len(f['fl']) + 1)) + '<th>Ano 6 em diante</th><th>Total</th>'
+        l1 = ''.join(f'<td>{R(x)}</td>' for x in f['fl']) + f'<td>{R(f["fl"][-1] * (1 + a["perp"]))}/ano</td><td></td>'
+        l2 = ''.join(f'<td>{R(x)}</td>' for x in f['vp']) + f'<td>{R(f["vpvt"])}</td><td>{R(f["ev"])}</td>'
+        val = (f'<div class="valor">{R(a["val"])}</div><p>Faixa provável: {R(a["faixa"][0])} a {R(a["faixa"][1])}. É a média de dois métodos de avaliação:</p>'
+               f'<div class="metodos"><div class="met"><div class="k">Múltiplo de lucro</div><div class="v">{R(a["val_mult"])}</div>'
+               f'<div class="e">Lucro de verdade do ano ({R(a["lucro_ano"])}) vezes ' + f'{a["mult"]:.1f}'.replace('.', ',') + f'x, o quanto o mercado costuma pagar por empresas parecidas{div_txt}.</div></div>'
+               f'<div class="met"><div class="k">Fluxo de caixa descontado</div><div class="v">{R(f["val"])}</div>'
+               f'<div class="e">Todo o lucro que a empresa ainda vai gerar, trazido para o valor de hoje{div_txt}.</div></div></div>'
+               f'<table class="fcd"><tr><th></th>{cab}</tr><tr><td>Lucro projetado</td>{l1}</tr><tr class="hoje"><td>Valor hoje</td>{l2}</tr></table>'
+               f'<p class="nota-fcd">Premissas: lucro crescendo {pc(a["cresc"])} ao ano por 5 anos e {P(a["perp"])} ao ano depois disso, descontado a {pc(a["taxa"])} ao ano '
+               f'(juros de mercado mais o risco de uma pequena empresa). Quanto mais organizada a empresa, menor o risco, menor a taxa e maior o valor.</p>' +
+               (f'<p class="ganho">Organizado (múltiplo de 4x), o mesmo lucro valeria {R(a["pot"])} pelo múltiplo.</p>' if a['pot'] > a['val_mult'] else ''))
+    else:
+        val = '<p>Pagando alguém no seu lugar, hoje o negócio não sobra lucro. Sem lucro, nem o múltiplo nem o fluxo de caixa descontado mostram valor. Antes de falar em valor, o foco é margem e custo.</p>'
+    np_ = len(a['prob']); tit_prob = 'O ponto que mais pede atenção' if np_ == 1 else f'Os {np_} pontos que mais pedem atenção'
     nota_html = f'<section><h2>Comentário do Analista</h2><p>{html.escape(nota)}</p></section>' if nota else ''
     return f'''<!DOCTYPE html><html lang="pt-BR"><head><meta charset="utf-8"><title>Diagnóstico | {nome}</title>
 <link href="https://fonts.googleapis.com/css2?family=Bangers&family=Comic+Neue:wght@400;700&display=swap" rel="stylesheet">
 <style>
-@page {{ size:A4; margin:14mm 12mm; }}
+@page {{ size:A4; margin:12mm 12mm; }}
 body {{ font-family:"Comic Neue",sans-serif; color:#1b1b1b; font-size:12.5pt; line-height:1.4; background:#fbf3dc; -webkit-print-color-adjust:exact; print-color-adjust:exact; }}
 .topo {{ display:flex; justify-content:space-between; background:#1f2a44; color:#fff; padding:8px 14px; font-weight:700; letter-spacing:.05em; }}
 h1 {{ font-family:Bangers,sans-serif; font-weight:400; font-size:34pt; margin:14px 0 4px; background:#f6c945; border:3px solid #1b1b1b; box-shadow:5px 5px 0 #1b1b1b; padding:6px 14px; letter-spacing:.03em; }}
 h2 {{ font-family:Bangers,sans-serif; font-weight:400; font-size:20pt; color:#1f2a44; margin:0 0 8px; letter-spacing:.04em; }}
-section {{ background:#fff; border:3px solid #1b1b1b; box-shadow:4px 4px 0 #1b1b1b; padding:12px 14px; margin:14px 0; break-inside:avoid; }}
+section {{ background:#fff; border:3px solid #1b1b1b; box-shadow:4px 4px 0 #1b1b1b; padding:10px 14px; margin:11px 0; break-inside:avoid; }}
 .meta {{ margin:10px 0; }}
 .grid {{ display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px; }}
 .ind {{ border:2px solid #1b1b1b; padding:8px; border-left-width:10px; }}
 .ind .k {{ font-weight:700; font-size:10.5pt; }} .ind .v {{ font-family:Bangers,sans-serif; font-size:22pt; letter-spacing:.02em; }} .ind .e {{ font-size:9.5pt; color:#555; }}
 .verde {{ border-left-color:#2f8a4c; }} .amarelo {{ border-left-color:#e3a20b; }} .vermelho {{ border-left-color:#d8432e; }}
-table {{ width:100%; border-collapse:collapse; }} td {{ padding:5px 4px; border-bottom:1px dashed #bbb; }} td:last-child {{ text-align:right; font-weight:700; }}
+table {{ width:100%; border-collapse:collapse; }} td {{ padding:3px 4px; border-bottom:1px dashed #bbb; }} td:last-child {{ text-align:right; font-weight:700; }}
 .ok {{ color:#2f8a4c; }} .meio {{ color:#b07a00; }} .nao {{ color:#d8432e; }}
 .prob {{ display:flex; gap:12px; margin:10px 0; }} .prob .n {{ flex:none; width:34px; height:34px; background:#d8432e; color:#fff; font-family:Bangers,sans-serif; font-size:20pt; display:flex; align-items:center; justify-content:center; border:2px solid #1b1b1b; }}
 .prob p {{ margin:3px 0; }} .acao {{ font-weight:700; color:#1f2a44; }}
 .valor {{ font-family:Bangers,sans-serif; font-size:36pt; color:#1f2a44; }} .ganho {{ background:#2f8a4c; color:#fff; padding:6px 10px; font-weight:700; }}
 .cta {{ background:#f6c945; }}
+.metodos {{ display:grid; grid-template-columns:1fr 1fr; gap:10px; margin:8px 0; }}
+.met {{ border:2px solid #1b1b1b; padding:8px; border-left:10px solid #1f2a44; }} .met .k {{ font-weight:700; font-size:10.5pt; }} .met .v {{ font-family:Bangers,sans-serif; font-size:20pt; letter-spacing:.02em; }} .met .e {{ font-size:9.5pt; color:#555; }}
+table.fcd {{ font-size:9pt; margin-top:6px; }} table.fcd th {{ text-align:right; font-size:8.5pt; border-bottom:2px solid #1b1b1b; padding:3px 2px; white-space:nowrap; }} table.fcd td {{ padding:3px 2px; text-align:right; white-space:nowrap; font-weight:400; }} table.fcd td:first-child {{ text-align:left; font-weight:700; }} table.fcd tr.hoje td {{ font-weight:700; }}
+.nota-fcd {{ font-size:9.5pt; color:#555; }}
 .aviso {{ font-size:9pt; color:#555; }}
 </style></head><body>
 <div class="topo"><span>O ANALISTA</span><span>@OANALISTA.BR</span></div>
 <h1>Diagnóstico do seu negócio</h1>
 <div class="meta"><b>{nome}</b>{' · ' + neg if neg else ''} · {html.escape(d.get('Cidade',''))} · {hoje}</div>
 <section><h2>Seus números do mês</h2><div class="grid">{cards}</div></section>
-<section><h2>Os 3 pontos que mais pedem atenção</h2>{probs}</section>
+<section><h2>{tit_prob}</h2>{probs}</section>
 <section><h2>Quanto o seu negócio vale hoje</h2>{val}</section>
 <section><h2>Como está a organização</h2><table>{orgs}</table></section>
 {nota_html}
 <section class="cta"><h2>Próximo passo recomendado: {a["proj"]}</h2><p>{PROJ[a["proj"]]}</p><p><b>Quer conversar sobre isso? Responda esta mensagem no WhatsApp: (44) 99974-3738.</b></p></section>
-<p class="aviso">Relatório feito a partir dos números que você informou, que são aproximados. Os indicadores e o valor estimado são uma referência inicial para pequenas empresas (múltiplos variam por setor) e não substituem uma análise completa. Conteúdo educacional, não é recomendação de investimento.</p>
+<p class="aviso">Relatório feito a partir dos números que você informou, que são aproximados. Os indicadores e o valor estimado são uma referência inicial para pequenas empresas (múltiplos e taxas de desconto variam por setor) e não substituem uma análise completa. Conteúdo educacional, não é recomendação de investimento.</p>
 </body></html>'''
 
 if __name__ == '__main__':
@@ -123,4 +154,4 @@ if __name__ == '__main__':
     with sync_playwright() as p:
         b = p.chromium.launch(**({'executable_path': '/usr/bin/google-chrome'} if os.path.exists('/usr/bin/google-chrome') else {})); pg = b.new_page()
         pg.set_content(h, wait_until='networkidle'); pg.pdf(path=out, format='A4', print_background=True); b.close()
-    print('ok', out, '| sobra', R(a['sobra']), '| valor', R(a['val']), '| projeto', a['proj'])
+    print('ok', out, '| sobra', R(a['sobra']), '| valor', R(a['val']), '(múltiplo', R(a['val_mult']), '| FCD', (R(a['dcf']['val']) if a['dcf'] else '-') + ')', '| projeto', a['proj'])
