@@ -8,7 +8,8 @@ def ler(txt):
     d = {}
     for l in txt.splitlines():
         if ':' in l and not l.startswith('*'):
-            k, v = l.split(':', 1); d[k.strip().rstrip('?')] = v.strip()
+            k, v = l.split(':', 1); d.setdefault(k.strip().rstrip('?'), v.strip())
+    d['_txt'] = txt
     return d
 
 def num(v):
@@ -18,17 +19,44 @@ def num(v):
 
 R = lambda v: ('-' if v < 0 else '') + 'R$ ' + f'{abs(v):,.0f}'.replace(',', '.')
 P = lambda v: f'{v*100:.1f}%'.replace('.', ',')
+Pc = lambda v: f'{v*100:.0f}%' if abs(v * 100 - round(v * 100)) < 1e-9 else P(v)   # sem casa decimal quando é número redondo
+
+NS = lambda v: 'não sei' in (v or '').lower()
+# Médias usadas quando a pessoa marca "Não sei" (referência para pequenas empresas, % do faturamento)
+CMV_SETOR = [('Comércio', .55), ('Alimentação', .35), ('Indústria', .45), ('Beleza', .10), ('Serviços', .12), ('Prestador', .05)]
+IMP_REGIME = {'MEI': .04, 'Simples Nacional': .09, 'Lucro Presumido': .15, 'Lucro Real': .15}
+REP_SETOR = [('Beleza', .40), ('Serviços', .30)]
 
 def analisa(d):
-    g = lambda k: num(d.get(k))
-    fat, cmv, fix, imp, pro, cx, div, parc = (g('Faturamento médio por mês'), g('Custo da mercadoria ou dos insumos por mês'), g('Despesas fixas por mês'),
-        g('Impostos e taxas do cartão por mês'), g('Quanto você tira para você por mês'), g('Quanto a empresa tem em caixa hoje'), g('Dívidas da empresa (total)'), g('Parcela mensal dessas dívidas'))
-    mc = fat - cmv - imp; mcp = mc / fat if fat else 0
+    tipo, regime = d.get('Tipo de negócio', ''), d.get('Enquadramento', '')
+    est, est_txt, nsab = [], [], []    # campos estimados pela média / como foram estimados / campos sem informação
+    def g(k, padrao=None, nome=None, como=None):
+        v = d.get(k)
+        if not NS(v): return num(v)
+        if padrao is None: nsab.append(nome); return 0.0
+        est.append(nome); est_txt.append(f'{nome} ({como or ("usamos " + Pc(padrao / fat) + " do faturamento" if fat else "usamos zero")})'); return padrao
+    fat = g('Faturamento médio por mês')
+    setor = lambda tab, pad: next((x for t, x in tab if tipo.startswith(t)), pad)
+    cmv = g('Custo da mercadoria ou dos insumos por mês', fat * setor(CMV_SETOR, .30), 'custo da mercadoria ou dos insumos')
+    fix = g('Despesas fixas por mês', fat * .25, 'despesas fixas')
+    imp = g('Impostos e taxas do cartão por mês', fat * IMP_REGIME.get(regime, .09), 'impostos e taxas do cartão')
+    pro = g('Quanto você tira para você por mês', fat * .08, 'quanto você tira para você')
+    cx_ns = NS(d.get('Quanto a empresa tem em caixa hoje')); cx = g('Quanto a empresa tem em caixa hoje', None, 'caixa de hoje')
+    div_ns = NS(d.get('Dívidas da empresa (total)')); div = g('Dívidas da empresa (total)', None, 'dívidas')
+    parc = g('Parcela mensal dessas dívidas', div / 24, 'parcela das dívidas', 'dívida dividida em 24 meses')
+    # Repasse aos profissionais (comissão): coluna própria ou a linha [Repasse ...] dentro de "Mais detalhes"
+    rv = d.get('Repasse aos profissionais (comissão)') or ''
+    m = re.search(r'\[Repasse aos profissionais \(comissão\): *([^\]]*)\]', d.get('_txt', ''))
+    if not rv and m: rv = m.group(1)
+    if NS(rv): rep_p = setor(REP_SETOR, .30); est.append('repasse aos profissionais'); est_txt.append(f'repasse aos profissionais (usamos {Pc(rep_p)})')
+    else: rep_p = min(num(rv), 100) / 100 if rv else 0.0
+    rep = fat * rep_p
+    mc = fat - cmv - imp - rep; mcp = mc / fat if fat else 0
     op = mc - fix                      # lucro da operação, antes de pagar o dono
     sobra = op - pro - parc            # o que sobra no mês depois de tudo
     saida_mes = fix + pro + parc
     pe = saida_mes / mcp if mcp > 0 else None
-    folego = cx / saida_mes * 30 if saida_mes else 0
+    folego = None if cx_ns else (cx / saida_mes * 30 if saida_mes else 0)
     pts = {'Sim': 1, 'Mais ou menos': .5, 'Não': 0}
     org = {k: d.get(k, 'Não') for k in ['As contas da empresa são separadas das suas', 'Você anota o que entra e sai, por data',
            'Você sabe quanto lucra em cada produto ou serviço', 'O negócio funciona uma semana sem você', 'Tem clientes que compram todo mês ou contratos']}
@@ -36,6 +64,7 @@ def analisa(d):
     mult = 2 + 0.4 * nota_org
     lucro_ano = (op - pro) * 12        # lucro de verdade: o comprador paga alguém no lugar do dono
     divliq = max(0, div - cx)
+    sem_div = div_ns
     val = (lucro_ano * mult - divliq) if lucro_ano > 0 else 0
     faixa = (max(0, lucro_ano * max(1.5, mult - .5) - divliq), max(0, lucro_ano * (mult + .5) - divliq)) if lucro_ano > 0 else (0, 0)
     pot = max(0, lucro_ano * 4 - divliq) if lucro_ano > 0 else 0
@@ -55,7 +84,8 @@ def analisa(d):
     prob = []
     def add(peso, titulo, texto, acao, projeto): prob.append((peso, titulo, texto, acao, projeto))
     if sobra < 0: add(100, 'O mês fecha no vermelho', f'Depois de pagar o negócio, você e as parcelas, faltam {R(-sobra)} por mês. Esse buraco está sendo coberto pelo caixa, por dívida ou pelo seu bolso.', 'Rever preço e custos antes de qualquer outro passo.', 'Precificação')
-    if folego < 30: add(90, 'Caixa curto', f'O caixa de hoje paga cerca de {folego:.0f} dias das saídas fixas do mês. Qualquer mês fraco vira aperto.', 'Montar o fluxo de caixa por data e criar uma reserva da empresa.', 'Caixa sob controle')
+    if cx_ns: add(92, 'Caixa sem controle', 'Você não sabe quanto a empresa tem em caixa hoje. Sem esse número, não dá para saber se o dinheiro aguenta um mês fraco.', 'Conferir o saldo da empresa toda semana e montar o fluxo de caixa por data (planilha LUCRO).', 'Caixa sob controle')
+    elif folego < 30: add(90, 'Caixa curto', f'O caixa de hoje paga cerca de {folego:.0f} dias das saídas fixas do mês. Qualquer mês fraco vira aperto.', 'Montar o fluxo de caixa por data e criar uma reserva da empresa.', 'Caixa sob controle')
     if d.get('Quanto das vendas é a prazo ou no cartão parcelado') in ('Metade', 'Mais da metade') and org['Você anota o que entra e sai, por data'] != 'Sim':
         add(80, 'Venda a prazo sem controle de datas', 'Grande parte das vendas entra aos poucos, e as contas vencem de uma vez. Sem anotar por data, o buraco aparece de surpresa.', 'Lançar entradas e saídas por data (planilha LUCRO) e negociar prazos com fornecedores.', 'Caixa sob controle')
     if fat and parc / fat > .08: add(75, 'Dívida pesando', f'As parcelas levam {P(parc/fat)} do faturamento. É dinheiro que não volta para o negócio.', 'Listar as dívidas pelo juro e renegociar as mais caras primeiro.', 'Caixa sob controle')
@@ -63,11 +93,14 @@ def analisa(d):
     if org['Você sabe quanto lucra em cada produto ou serviço'] != 'Sim': add(60, 'Preço no escuro', 'Sem saber o lucro de cada item, é fácil vender muito do que dá pouco (ou até prejuízo).', 'Usar a calculadora de markup e margem (palavra PREÇO) nos 10 itens que mais vendem.', 'Precificação')
     if org['As contas da empresa são separadas das suas'] != 'Sim': add(55, 'Contas misturadas', 'Com o dinheiro da casa e da empresa juntos, não dá para saber o lucro de verdade.', 'Conta PJ só da empresa e pró-labore fixo, num dia fixo.', 'Check-up financeiro')
     if org['O negócio funciona uma semana sem você'] != 'Sim': add(45, 'Tudo depende de você', 'Para quem compra ou para um sócio, um negócio que depende do dono vale bem menos.', 'Escrever o passo a passo das tarefas que só você sabe fazer.', 'Valuation')
+    faltam = est + [x for x in nsab if x != 'caixa de hoje']
+    if len(faltam) >= 2:
+        add(85, 'Números no escuro', f'Você não soube informar: {", ".join(faltam)}. Usamos médias do setor para fazer as contas, mas o negócio só fica sob controle quando esses números estão na sua mão.', 'Levantar esses valores no extrato do banco, nas notas e na maquininha do último mês.', 'Check-up financeiro')
     prob.sort(key=lambda x: -x[0])
     if len(prob) < 3: add(10, 'Base boa para crescer', 'Os números básicos estão saudáveis. O próximo passo é crescer sem perder margem.', 'Definir metas de margem e de caixa e acompanhar todo mês.', 'Valuation')
     obj = d.get('Seu objetivo para os próximos 12 meses', '')
     proj = 'Valuation' if obj in ('Vender a empresa', 'Trazer um sócio ou investidor', 'Saber quanto a empresa vale') else prob[0][4]
-    return dict(fat=fat, cmv=cmv, fix=fix, imp=imp, pro=pro, cx=cx, div=div, parc=parc, mc=mc, mcp=mcp, op=op, sobra=sobra, pe=pe, folego=folego,
+    return dict(est_txt=est_txt, est=est, nsab=nsab, rep=rep, rep_p=rep_p, sem_div=sem_div, fat=fat, cmv=cmv, fix=fix, imp=imp, pro=pro, cx=cx, div=div, parc=parc, mc=mc, mcp=mcp, op=op, sobra=sobra, pe=pe, folego=folego,
                 org=org, mult=mult, lucro_ano=lucro_ano, val=val, val_mult=val_mult, dcf=dcf, taxa=taxa, cresc=cresc, perp=perp, divliq=divliq, faixa=faixa, pot=pot, prob=prob[:3], proj=proj)
 
 PROJ = {'Valuation': 'Avaliação completa do quanto a empresa vale, com cenários e o que fazer para aumentar esse valor.',
@@ -81,17 +114,20 @@ def gera(d, a, nota=''):
     nome = html.escape(d.get('Seu nome', 'Empreendedor(a)')); neg = html.escape(d.get('O que você vende', ''))
     hoje = datetime.date.today().strftime('%d/%m/%Y')
     ind = [('Faturamento por mês', R(a['fat']), '', ''),
-           ('Margem de contribuição', P(a['mcp']), 'O que sobra de cada venda depois da mercadoria, impostos e taxas.', sinal(a['mcp'] >= .4, a['mcp'] >= .25)),
+           ('Margem de contribuição', P(a['mcp']), 'O que sobra de cada venda depois da mercadoria, impostos e taxas' + (f' e do repasse de {Pc(a["rep_p"])} aos profissionais.' if a['rep'] else '.'), sinal(a['mcp'] >= .4, a['mcp'] >= .25)),
            ('Lucro da operação', R(a['op']), 'Antes de pagar você e as dívidas.', sinal(a['op'] > a['pro'] + a['parc'], a['op'] > 0)),
            ('Sobra no fim do mês', R(a['sobra']), 'Depois do seu pró-labore e das parcelas.', sinal(a['sobra'] > .05 * a['fat'], a['sobra'] >= 0)),
            ('Ponto de equilíbrio', R(a['pe']) if a['pe'] else 'não calculável', 'Quanto precisa vender por mês para empatar.', sinal(bool(a['pe']) and a['pe'] < .85 * a['fat'], bool(a['pe']) and a['pe'] <= a['fat'])),
-           ('Fôlego de caixa', f"{a['folego']:.0f} dias", 'Quanto tempo o caixa de hoje paga as saídas fixas.', sinal(a['folego'] >= 90, a['folego'] >= 30))]
+           ('Fôlego de caixa', f"{a['folego']:.0f} dias" if a['folego'] is not None else 'não informado', 'Quanto tempo o caixa de hoje paga as saídas fixas.', sinal(a['folego'] is not None and a['folego'] >= 90, a['folego'] is not None and a['folego'] >= 30))]
+    est_html = ('<p class="est">* ' + (f'Você marcou "Não sei" em: {", ".join(a["est_txt"])}. ' if a['est'] else '') +
+                (f'Sem informação, {"ficou" if len(a["nsab"]) == 1 else "ficaram"} fora das contas: {", ".join(a["nsab"])}. ' if a['nsab'] else '') +
+                'Com os números reais, o resultado pode mudar.</p>') if a['est'] or a['nsab'] else ''
     cards = ''.join(f'<div class="ind {c}"><div class="k">{k}</div><div class="v">{v}</div><div class="e">{e}</div></div>' for k, v, e, c in ind)
     orgs = ''.join(f'<tr><td>{html.escape(k)}?</td><td class="{ {"Sim":"ok","Mais ou menos":"meio"}.get(v,"nao") }">{html.escape(v)}</td></tr>' for k, v in a['org'].items())
     probs = ''.join(f'<div class="prob"><div class="n">{i}</div><div><b>{t}</b><p>{x}</p><p class="acao">O que fazer: {ac}</p></div></div>' for i, (_, t, x, ac, _p) in enumerate(a['prob'], 1))
     if a['lucro_ano'] > 0:
         f = a['dcf']; pc = lambda v: f'{v*100:.0f}%'.replace('.', ',') if v*100 == int(v*100) else P(v)
-        div_txt = f', menos a dívida líquida de {R(a["divliq"])}' if a['divliq'] > 0 else ''
+        div_txt = f', menos a dívida líquida de {R(a["divliq"])}' if a['divliq'] > 0 else (', sem descontar dívidas, que você não informou' if a['sem_div'] else '')
         cab = ''.join(f'<th>Ano {t}</th>' for t in range(1, len(f['fl']) + 1)) + '<th>Ano 6 em diante</th><th>Total</th>'
         l1 = ''.join(f'<td>{R(x)}</td>' for x in f['fl']) + f'<td>{R(f["fl"][-1] * (1 + a["perp"]))}/ano</td><td></td>'
         l2 = ''.join(f'<td>{R(x)}</td>' for x in f['vp']) + f'<td>{R(f["vpvt"])}</td><td>{R(f["ev"])}</td>'
@@ -124,7 +160,7 @@ section {{ background:#fff; border:3px solid #1b1b1b; box-shadow:4px 4px 0 #1b1b
 .verde {{ border-left-color:#2f8a4c; }} .amarelo {{ border-left-color:#e3a20b; }} .vermelho {{ border-left-color:#d8432e; }}
 table {{ width:100%; border-collapse:collapse; }} td {{ padding:3px 4px; border-bottom:1px dashed #bbb; }} td:last-child {{ text-align:right; font-weight:700; }}
 .ok {{ color:#2f8a4c; }} .meio {{ color:#b07a00; }} .nao {{ color:#d8432e; }}
-.prob {{ display:flex; gap:12px; margin:10px 0; }} .prob .n {{ flex:none; width:34px; height:34px; background:#d8432e; color:#fff; font-family:Bangers,sans-serif; font-size:20pt; display:flex; align-items:center; justify-content:center; border:2px solid #1b1b1b; }}
+.prob {{ display:flex; gap:12px; margin:10px 0; break-inside:avoid; }} section.probs {{ break-inside:auto; }} .prob .n {{ flex:none; width:34px; height:34px; background:#d8432e; color:#fff; font-family:Bangers,sans-serif; font-size:20pt; display:flex; align-items:center; justify-content:center; border:2px solid #1b1b1b; }}
 .prob p {{ margin:3px 0; }} .acao {{ font-weight:700; color:#1f2a44; }}
 .valor {{ font-family:Bangers,sans-serif; font-size:36pt; color:#1f2a44; }} .ganho {{ background:#2f8a4c; color:#fff; padding:6px 10px; font-weight:700; }}
 .cta {{ background:#f6c945; }}
@@ -132,13 +168,14 @@ table {{ width:100%; border-collapse:collapse; }} td {{ padding:3px 4px; border-
 .met {{ border:2px solid #1b1b1b; padding:8px; border-left:10px solid #1f2a44; }} .met .k {{ font-weight:700; font-size:10.5pt; }} .met .v {{ font-family:Bangers,sans-serif; font-size:20pt; letter-spacing:.02em; }} .met .e {{ font-size:9.5pt; color:#555; }}
 table.fcd {{ font-size:9pt; margin-top:6px; }} table.fcd th {{ text-align:right; font-size:8.5pt; border-bottom:2px solid #1b1b1b; padding:3px 2px; white-space:nowrap; }} table.fcd td {{ padding:3px 2px; text-align:right; white-space:nowrap; font-weight:400; }} table.fcd td:first-child {{ text-align:left; font-weight:700; }} table.fcd tr.hoje td {{ font-weight:700; }}
 .nota-fcd {{ font-size:9.5pt; color:#555; }}
+.est {{ font-size:9.5pt; background:#fff4cc; border-left:6px solid #e3a20b; padding:4px 8px; margin:8px 0 0; }}
 .aviso {{ font-size:9pt; color:#555; }}
 </style></head><body>
 <div class="topo"><span>O ANALISTA</span><span>@OANALISTA.BR</span></div>
 <h1>Diagnóstico do seu negócio</h1>
 <div class="meta"><b>{nome}</b>{' · ' + neg if neg else ''} · {html.escape(d.get('Cidade',''))} · {hoje}</div>
-<section><h2>Seus números do mês</h2><div class="grid">{cards}</div></section>
-<section><h2>{tit_prob}</h2>{probs}</section>
+<section><h2>Seus números do mês</h2><div class="grid">{cards}</div>{est_html}</section>
+<section class="probs"><h2>{tit_prob}</h2>{probs}</section>
 <section><h2>Quanto o seu negócio vale hoje</h2>{val}</section>
 <section><h2>Como está a organização</h2><table>{orgs}</table></section>
 {nota_html}
