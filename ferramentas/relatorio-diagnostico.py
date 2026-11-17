@@ -26,6 +26,9 @@ NS = lambda v: 'não sei' in (v or '').lower()
 CMV_SETOR = [('Comércio', .55), ('Alimentação', .35), ('Indústria', .45), ('Beleza', .10), ('Serviços', .12), ('Prestador', .05)]
 IMP_REGIME = {'MEI': .04, 'Simples Nacional': .09, 'Lucro Presumido': .15, 'Lucro Real': .15}
 REP_SETOR = [('Beleza', .40), ('Serviços', .30)]
+# Peso de cada informação no resultado: define a confiança do relatório quando a pessoa marca "Não sei"
+PESO = {'custo da mercadoria ou dos insumos': 3, 'despesas fixas': 3, 'repasse aos profissionais': 3, 'impostos e taxas do cartão': 2,
+        'quanto você tira para você': 2, 'dívidas': 2, 'parcela das dívidas': 1, 'caixa de hoje': 1}
 
 def analisa(d):
     tipo, regime = d.get('Tipo de negócio', ''), d.get('Enquadramento', '')
@@ -81,15 +84,21 @@ def analisa(d):
     if dcf:                            # valor final = média dos dois métodos; faixa cobre os dois (FCD com taxa +-3 pontos)
         val = (val_mult + dcf['val']) / 2
         faixa = (min(faixa[0], fcd(taxa + .03)['val']), max(faixa[1], fcd(taxa - .03)['val']))
+    # Confiança: quanto do resultado depende de números que a pessoa não soube informar
+    falta = est + nsab; pts = sum(PESO.get(x, 1) for x in falta)
+    conf = 'alta' if pts == 0 else ('média' if pts <= 2 else 'baixa')
+    abre = {'alta': 0, 'média': .10, 'baixa': .25}[conf]   # faixa mais larga quando falta informação
+    faixa = (faixa[0] * (1 - abre), faixa[1] * (1 + abre))
+    obs = ' (conta feita com valores estimados)' if conf == 'baixa' else ''
     prob = []
     def add(peso, titulo, texto, acao, projeto): prob.append((peso, titulo, texto, acao, projeto))
-    if sobra < 0: add(100, 'O mês fecha no vermelho', f'Depois de pagar o negócio, você e as parcelas, faltam {R(-sobra)} por mês. Esse buraco está sendo coberto pelo caixa, por dívida ou pelo seu bolso.', 'Rever preço e custos antes de qualquer outro passo.', 'Precificação')
+    if sobra < 0: add(100, 'O mês fecha no vermelho', f'Depois de pagar o negócio, você e as parcelas, faltam {R(-sobra)} por mês{obs}. Esse buraco está sendo coberto pelo caixa, por dívida ou pelo seu bolso.', 'Rever preço e custos antes de qualquer outro passo.', 'Precificação')
     if cx_ns: add(92, 'Caixa sem controle', 'Você não sabe quanto a empresa tem em caixa hoje. Sem esse número, não dá para saber se o dinheiro aguenta um mês fraco.', 'Conferir o saldo da empresa toda semana e montar o fluxo de caixa por data (planilha LUCRO).', 'Caixa sob controle')
     elif folego < 30: add(90, 'Caixa curto', f'O caixa de hoje paga cerca de {folego:.0f} dias das saídas fixas do mês. Qualquer mês fraco vira aperto.', 'Montar o fluxo de caixa por data e criar uma reserva da empresa.', 'Caixa sob controle')
     if d.get('Quanto das vendas é a prazo ou no cartão parcelado') in ('Metade', 'Mais da metade') and org['Você anota o que entra e sai, por data'] != 'Sim':
         add(80, 'Venda a prazo sem controle de datas', 'Grande parte das vendas entra aos poucos, e as contas vencem de uma vez. Sem anotar por data, o buraco aparece de surpresa.', 'Lançar entradas e saídas por data (planilha LUCRO) e negociar prazos com fornecedores.', 'Caixa sob controle')
-    if fat and parc / fat > .08: add(75, 'Dívida pesando', f'As parcelas levam {P(parc/fat)} do faturamento. É dinheiro que não volta para o negócio.', 'Listar as dívidas pelo juro e renegociar as mais caras primeiro.', 'Caixa sob controle')
-    if fat and 0 <= sobra / fat < .05: add(70, 'Margem apertada', f'Sobram só {P(sobra/fat)} do que você vende. Um desconto ou um aumento de custo já zera o lucro.', 'Calcular a margem de cada produto e ajustar o preço dos que dão menos.', 'Precificação')
+    if fat and parc / fat > .08: add(75, 'Dívida pesando', f'As parcelas levam {P(parc/fat)} do faturamento{obs if "parcela das dívidas" in est else ""}. É dinheiro que não volta para o negócio.', 'Listar as dívidas pelo juro e renegociar as mais caras primeiro.', 'Caixa sob controle')
+    if fat and 0 <= sobra / fat < .05: add(70, 'Margem apertada', f'Sobram só {P(sobra/fat)} do que você vende{obs}. Um desconto ou um aumento de custo já zera o lucro.', 'Calcular a margem de cada produto e ajustar o preço dos que dão menos.', 'Precificação')
     if org['Você sabe quanto lucra em cada produto ou serviço'] != 'Sim': add(60, 'Preço no escuro', 'Sem saber o lucro de cada item, é fácil vender muito do que dá pouco (ou até prejuízo).', 'Usar a calculadora de markup e margem (palavra PREÇO) nos 10 itens que mais vendem.', 'Precificação')
     if org['As contas da empresa são separadas das suas'] != 'Sim': add(55, 'Contas misturadas', 'Com o dinheiro da casa e da empresa juntos, não dá para saber o lucro de verdade.', 'Conta PJ só da empresa e pró-labore fixo, num dia fixo.', 'Check-up financeiro')
     if org['O negócio funciona uma semana sem você'] != 'Sim': add(45, 'Tudo depende de você', 'Para quem compra ou para um sócio, um negócio que depende do dono vale bem menos.', 'Escrever o passo a passo das tarefas que só você sabe fazer.', 'Valuation')
@@ -97,10 +106,10 @@ def analisa(d):
     if len(faltam) >= 2:
         add(85, 'Números no escuro', f'Você não soube informar: {", ".join(faltam)}. Usamos médias do setor para fazer as contas, mas o negócio só fica sob controle quando esses números estão na sua mão.', 'Levantar esses valores no extrato do banco, nas notas e na maquininha do último mês.', 'Check-up financeiro')
     prob.sort(key=lambda x: -x[0])
-    if len(prob) < 3: add(10, 'Base boa para crescer', 'Os números básicos estão saudáveis. O próximo passo é crescer sem perder margem.', 'Definir metas de margem e de caixa e acompanhar todo mês.', 'Valuation')
+    if len(prob) < 3: add(10, 'Base boa para crescer', ('Pelos números informados e pelas médias usadas, a base parece saudável, mas confirme com os valores reais.' if conf != 'alta' else 'Os números básicos estão saudáveis.') + ' O próximo passo é crescer sem perder margem.', 'Definir metas de margem e de caixa e acompanhar todo mês.', 'Valuation')
     obj = d.get('Seu objetivo para os próximos 12 meses', '')
     proj = 'Valuation' if obj in ('Vender a empresa', 'Trazer um sócio ou investidor', 'Saber quanto a empresa vale') else prob[0][4]
-    return dict(est_txt=est_txt, est=est, nsab=nsab, rep=rep, rep_p=rep_p, sem_div=sem_div, fat=fat, cmv=cmv, fix=fix, imp=imp, pro=pro, cx=cx, div=div, parc=parc, mc=mc, mcp=mcp, op=op, sobra=sobra, pe=pe, folego=folego,
+    return dict(conf=conf, falta=falta, est_txt=est_txt, est=est, nsab=nsab, rep=rep, rep_p=rep_p, sem_div=sem_div, fat=fat, cmv=cmv, fix=fix, imp=imp, pro=pro, cx=cx, div=div, parc=parc, mc=mc, mcp=mcp, op=op, sobra=sobra, pe=pe, folego=folego,
                 org=org, mult=mult, lucro_ano=lucro_ano, val=val, val_mult=val_mult, dcf=dcf, taxa=taxa, cresc=cresc, perp=perp, divliq=divliq, faixa=faixa, pot=pot, prob=prob[:3], proj=proj)
 
 PROJ = {'Valuation': 'Avaliação completa do quanto a empresa vale, com cenários e o que fazer para aumentar esse valor.',
@@ -119,6 +128,16 @@ def gera(d, a, nota=''):
            ('Sobra no fim do mês', R(a['sobra']), 'Depois do seu pró-labore e das parcelas.', sinal(a['sobra'] > .05 * a['fat'], a['sobra'] >= 0)),
            ('Ponto de equilíbrio', R(a['pe']) if a['pe'] else 'não calculável', 'Quanto precisa vender por mês para empatar.', sinal(bool(a['pe']) and a['pe'] < .85 * a['fat'], bool(a['pe']) and a['pe'] <= a['fat'])),
            ('Fôlego de caixa', f"{a['folego']:.0f} dias" if a['folego'] is not None else 'não informado', 'Quanto tempo o caixa de hoje paga as saídas fixas.', sinal(a['folego'] is not None and a['folego'] >= 90, a['folego'] is not None and a['folego'] >= 30))]
+    dep = {'Margem de contribuição': {'custo da mercadoria ou dos insumos', 'impostos e taxas do cartão', 'repasse aos profissionais'}}
+    dep['Lucro da operação'] = dep['Margem de contribuição'] | {'despesas fixas'}
+    dep['Sobra no fim do mês'] = dep['Lucro da operação'] | {'quanto você tira para você', 'parcela das dívidas'}
+    dep['Ponto de equilíbrio'] = dep['Sobra no fim do mês']
+    dep['Fôlego de caixa'] = {'despesas fixas', 'quanto você tira para você', 'parcela das dívidas'}
+    ind = [(k, v + ('*' if dep.get(k, set()) & set(a['est']) and not v.startswith('não') else ''), e, c) for k, v, e, c in ind]
+    lista = ', '.join(a['falta'])
+    aviso_conf = {'alta': '',
+        'média': f'<div class="conf media"><b>Resultado aproximado.</b> Você não soube informar: {lista}. Fizemos a análise com o que você passou e com médias do setor nesses pontos, então os números abaixo são uma aproximação.</div>',
+        'baixa': f'<div class="conf baixa"><b>Atenção: resultado com pouca certeza.</b> Você não soube informar: {lista}. Esses números pesam muito na análise. Fizemos as contas com o que você passou e com médias do setor, mas, diante da falta dessas informações, não é possível ter certeza do lucro, do ponto de equilíbrio e do valor da empresa. Leia os resultados como uma estimativa. Se conseguir esses valores, responda no WhatsApp que eu refaço o relatório.</div>'}[a['conf']]
     est_html = ('<p class="est">* ' + (f'Você marcou "Não sei" em: {", ".join(a["est_txt"])}. ' if a['est'] else '') +
                 (f'Sem informação, {"ficou" if len(a["nsab"]) == 1 else "ficaram"} fora das contas: {", ".join(a["nsab"])}. ' if a['nsab'] else '') +
                 'Com os números reais, o resultado pode mudar.</p>') if a['est'] or a['nsab'] else ''
@@ -131,7 +150,9 @@ def gera(d, a, nota=''):
         cab = ''.join(f'<th>Ano {t}</th>' for t in range(1, len(f['fl']) + 1)) + '<th>Ano 6 em diante</th><th>Total</th>'
         l1 = ''.join(f'<td>{R(x)}</td>' for x in f['fl']) + f'<td>{R(f["fl"][-1] * (1 + a["perp"]))}/ano</td><td></td>'
         l2 = ''.join(f'<td>{R(x)}</td>' for x in f['vp']) + f'<td>{R(f["vpvt"])}</td><td>{R(f["ev"])}</td>'
-        val = (f'<div class="valor">{R(a["val"])}</div><p>Faixa provável: {R(a["faixa"][0])} a {R(a["faixa"][1])}. É a média de dois métodos de avaliação:</p>'
+        ress = {'alta': '', 'média': '<p class="ress">Como faltaram algumas informações, a faixa ficou mais larga.</p>',
+                'baixa': '<p class="ress">Com as informações que faltaram, esse valor é só uma indicação e pode ser bem diferente, para mais ou para menos. A faixa ficou mais larga por isso.</p>'}[a['conf']]
+        val = (f'<div class="valor">{R(a["val"])}{"*" if a["conf"] != "alta" else ""}</div>{ress}<p>Faixa provável: {R(a["faixa"][0])} a {R(a["faixa"][1])}. É a média de dois métodos de avaliação:</p>'
                f'<div class="metodos"><div class="met"><div class="k">Múltiplo de lucro</div><div class="v">{R(a["val_mult"])}</div>'
                f'<div class="e">Lucro de verdade do ano ({R(a["lucro_ano"])}) vezes ' + f'{a["mult"]:.1f}'.replace('.', ',') + f'x, o quanto o mercado costuma pagar por empresas parecidas{div_txt}.</div></div>'
                f'<div class="met"><div class="k">Fluxo de caixa descontado</div><div class="v">{R(f["val"])}</div>'
@@ -167,13 +188,16 @@ table {{ width:100%; border-collapse:collapse; }} td {{ padding:3px 4px; border-
 .metodos {{ display:grid; grid-template-columns:1fr 1fr; gap:10px; margin:8px 0; }}
 .met {{ border:2px solid #1b1b1b; padding:8px; border-left:10px solid #1f2a44; }} .met .k {{ font-weight:700; font-size:10.5pt; }} .met .v {{ font-family:Bangers,sans-serif; font-size:20pt; letter-spacing:.02em; }} .met .e {{ font-size:9.5pt; color:#555; }}
 table.fcd {{ font-size:9pt; margin-top:6px; }} table.fcd th {{ text-align:right; font-size:8.5pt; border-bottom:2px solid #1b1b1b; padding:3px 2px; white-space:nowrap; }} table.fcd td {{ padding:3px 2px; text-align:right; white-space:nowrap; font-weight:400; }} table.fcd td:first-child {{ text-align:left; font-weight:700; }} table.fcd tr.hoje td {{ font-weight:700; }}
+.ress {{ font-weight:700; color:#b0341f; margin:2px 0 6px; }}
 .nota-fcd {{ font-size:9.5pt; color:#555; }}
+.conf {{ border:3px solid #1b1b1b; padding:8px 12px; margin:10px 0 4px; font-size:11pt; }} .conf.baixa {{ background:#f9d3cc; border-left:12px solid #d8432e; }} .conf.media {{ background:#fff4cc; border-left:12px solid #e3a20b; }}
 .est {{ font-size:9.5pt; background:#fff4cc; border-left:6px solid #e3a20b; padding:4px 8px; margin:8px 0 0; }}
 .aviso {{ font-size:9pt; color:#555; }}
 </style></head><body>
 <div class="topo"><span>O ANALISTA</span><span>@OANALISTA.BR</span></div>
 <h1>Diagnóstico do seu negócio</h1>
 <div class="meta"><b>{nome}</b>{' · ' + neg if neg else ''} · {html.escape(d.get('Cidade',''))} · {hoje}</div>
+{aviso_conf}
 <section><h2>Seus números do mês</h2><div class="grid">{cards}</div>{est_html}</section>
 <section class="probs"><h2>{tit_prob}</h2>{probs}</section>
 <section><h2>Quanto o seu negócio vale hoje</h2>{val}</section>
@@ -191,4 +215,4 @@ if __name__ == '__main__':
     with sync_playwright() as p:
         b = p.chromium.launch(**({'executable_path': '/usr/bin/google-chrome'} if os.path.exists('/usr/bin/google-chrome') else {})); pg = b.new_page()
         pg.set_content(h, wait_until='networkidle'); pg.pdf(path=out, format='A4', print_background=True); b.close()
-    print('ok', out, '| sobra', R(a['sobra']), '| valor', R(a['val']), '(múltiplo', R(a['val_mult']), '| FCD', (R(a['dcf']['val']) if a['dcf'] else '-') + ')', '| projeto', a['proj'])
+    print('ok', out, '| confiança', a['conf'], ('(' + ', '.join(a['falta']) + ')') if a['falta'] else '', '| sobra', R(a['sobra']), '| valor', R(a['val']), '(múltiplo', R(a['val_mult']), '| FCD', (R(a['dcf']['val']) if a['dcf'] else '-') + ')', '| projeto', a['proj'])
