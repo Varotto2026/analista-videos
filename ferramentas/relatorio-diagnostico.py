@@ -37,7 +37,7 @@ def analisa(d):
         v = d.get(k)
         if not NS(v): return num(v)
         if padrao is None: nsab.append(nome); return 0.0
-        est.append(nome); est_txt.append(f'{nome} ({como or ("usamos " + Pc(padrao / fat) + " do faturamento" if fat else "usamos zero")})'); return padrao
+        est.append(nome); est_txt.append(f'{nome} ({como or ("média de mercado: " + Pc(padrao / fat) + " do faturamento" if fat else "usamos zero")})'); return padrao
     fat = g('Faturamento médio por mês')
     setor = lambda tab, pad: next((x for t, x in tab if tipo.startswith(t)), pad)
     cmv = g('Custo da mercadoria ou dos insumos por mês', fat * setor(CMV_SETOR, .30), 'custo da mercadoria ou dos insumos')
@@ -46,12 +46,12 @@ def analisa(d):
     pro = g('Quanto você tira para você por mês', fat * .08, 'quanto você tira para você')
     cx_ns = NS(d.get('Quanto a empresa tem em caixa hoje')); cx = g('Quanto a empresa tem em caixa hoje', None, 'caixa de hoje')
     div_ns = NS(d.get('Dívidas da empresa (total)')); div = g('Dívidas da empresa (total)', None, 'dívidas')
-    parc = g('Parcela mensal dessas dívidas', div / 24, 'parcela das dívidas', 'dívida dividida em 24 meses')
+    parc = g('Parcela mensal dessas dívidas', div / 24, 'parcela das dívidas', 'média de mercado: dívida paga em 24 meses')
     # Repasse aos profissionais (comissão): coluna própria ou a linha [Repasse ...] dentro de "Mais detalhes"
     rv = d.get('Repasse aos profissionais (comissão)') or ''
     m = re.search(r'\[Repasse aos profissionais \(comissão\): *([^\]]*)\]', d.get('_txt', ''))
     if not rv and m: rv = m.group(1)
-    if NS(rv): rep_p = setor(REP_SETOR, .30); est.append('repasse aos profissionais'); est_txt.append(f'repasse aos profissionais (usamos {Pc(rep_p)})')
+    if NS(rv): rep_p = setor(REP_SETOR, .30); est.append('repasse aos profissionais'); est_txt.append(f'repasse aos profissionais (média de mercado: {Pc(rep_p)} do faturamento)')
     else: rep_p = min(num(rv), 100) / 100 if rv else 0.0
     rep = fat * rep_p
     mc = fat - cmv - imp - rep; mcp = mc / fat if fat else 0
@@ -104,9 +104,9 @@ def analisa(d):
     if org['O negócio funciona uma semana sem você'] != 'Sim': add(45, 'Tudo depende de você', 'Para quem compra ou para um sócio, um negócio que depende do dono vale bem menos.', 'Escrever o passo a passo das tarefas que só você sabe fazer.', 'Valuation')
     faltam = est + [x for x in nsab if x != 'caixa de hoje']
     if len(faltam) >= 2:
-        add(85, 'Números no escuro', f'Você não soube informar: {", ".join(faltam)}. Usamos médias do setor para fazer as contas, mas o negócio só fica sob controle quando esses números estão na sua mão.', 'Levantar esses valores no extrato do banco, nas notas e na maquininha do último mês.', 'Check-up financeiro')
+        add(85, 'Números no escuro', f'Você não soube informar: {", ".join(faltam)}. Usamos a média de mercado no lugar desses valores, mas o negócio só fica sob controle quando esses números estão na sua mão.', 'Levantar esses valores no extrato do banco, nas notas e na maquininha do último mês.', 'Check-up financeiro')
     prob.sort(key=lambda x: -x[0])
-    if len(prob) < 3: add(10, 'Base boa para crescer', ('Pelos números informados e pelas médias usadas, a base parece saudável, mas confirme com os valores reais.' if conf != 'alta' else 'Os números básicos estão saudáveis.') + ' O próximo passo é crescer sem perder margem.', 'Definir metas de margem e de caixa e acompanhar todo mês.', 'Valuation')
+    if len(prob) < 3: add(10, 'Base boa para crescer', ('Pelos números informados e pela média de mercado usada no que faltou, a base parece saudável, mas confirme com os valores reais.' if conf != 'alta' else 'Os números básicos estão saudáveis.') + ' O próximo passo é crescer sem perder margem.', 'Definir metas de margem e de caixa e acompanhar todo mês.', 'Valuation')
     obj = d.get('Seu objetivo para os próximos 12 meses', '')
     proj = 'Valuation' if obj in ('Vender a empresa', 'Trazer um sócio ou investidor', 'Saber quanto a empresa vale') else prob[0][4]
     return dict(conf=conf, falta=falta, est_txt=est_txt, est=est, nsab=nsab, rep=rep, rep_p=rep_p, sem_div=sem_div, fat=fat, cmv=cmv, fix=fix, imp=imp, pro=pro, cx=cx, div=div, parc=parc, mc=mc, mcp=mcp, op=op, sobra=sobra, pe=pe, folego=folego,
@@ -136,9 +136,9 @@ def gera(d, a, nota=''):
     ind = [(k, v + ('*' if dep.get(k, set()) & set(a['est']) and not v.startswith('não') else ''), e, c) for k, v, e, c in ind]
     lista = ', '.join(a['falta'])
     aviso_conf = {'alta': '',
-        'média': f'<div class="conf media"><b>Resultado aproximado.</b> Você não soube informar: {lista}. Fizemos a análise com o que você passou e com médias do setor nesses pontos, então os números abaixo são uma aproximação.</div>',
-        'baixa': f'<div class="conf baixa"><b>Atenção: resultado com pouca certeza.</b> Você não soube informar: {lista}. Esses números pesam muito na análise. Fizemos as contas com o que você passou e com médias do setor, mas, diante da falta dessas informações, não é possível ter certeza do lucro, do ponto de equilíbrio e do valor da empresa. Leia os resultados como uma estimativa. Se conseguir esses valores, responda no WhatsApp que eu refaço o relatório.</div>'}[a['conf']]
-    est_html = ('<p class="est">* ' + (f'Você marcou "Não sei" em: {", ".join(a["est_txt"])}. ' if a['est'] else '') +
+        'média': f'<div class="conf media"><b>Resultado aproximado.</b> Você não soube informar: {lista}. Fizemos a análise com o que você passou e, nesses pontos, usamos a média de mercado. Por isso os números abaixo são uma aproximação.</div>',
+        'baixa': f'<div class="conf baixa"><b>Atenção: resultado com pouca certeza.</b> Você não soube informar: {lista}. Esses números pesam muito na análise. Fizemos as contas com o que você passou e, no lugar desses valores, usamos a média de mercado. Mas, diante da falta dessas informações, não é possível ter certeza do lucro, do ponto de equilíbrio e do valor da empresa. Leia os resultados como uma estimativa. Se conseguir esses valores, responda no WhatsApp que eu refaço o relatório.</div>'}[a['conf']]
+    est_html = ('<p class="est">* ' + (f'Calculado com a média de mercado, porque você marcou "Não sei" em: {", ".join(a["est_txt"])}. ' if a['est'] else '') +
                 (f'Sem informação, {"ficou" if len(a["nsab"]) == 1 else "ficaram"} fora das contas: {", ".join(a["nsab"])}. ' if a['nsab'] else '') +
                 'Com os números reais, o resultado pode mudar.</p>') if a['est'] or a['nsab'] else ''
     cards = ''.join(f'<div class="ind {c}"><div class="k">{k}</div><div class="v">{v}</div><div class="e">{e}</div></div>' for k, v, e, c in ind)
@@ -150,8 +150,8 @@ def gera(d, a, nota=''):
         cab = ''.join(f'<th>Ano {t}</th>' for t in range(1, len(f['fl']) + 1)) + '<th>Ano 6 em diante</th><th>Total</th>'
         l1 = ''.join(f'<td>{R(x)}</td>' for x in f['fl']) + f'<td>{R(f["fl"][-1] * (1 + a["perp"]))}/ano</td><td></td>'
         l2 = ''.join(f'<td>{R(x)}</td>' for x in f['vp']) + f'<td>{R(f["vpvt"])}</td><td>{R(f["ev"])}</td>'
-        ress = {'alta': '', 'média': '<p class="ress">Como faltaram algumas informações, a faixa ficou mais larga.</p>',
-                'baixa': '<p class="ress">Com as informações que faltaram, esse valor é só uma indicação e pode ser bem diferente, para mais ou para menos. A faixa ficou mais larga por isso.</p>'}[a['conf']]
+        ress = {'alta': '', 'média': '<p class="ress">Calculado em parte com a média de mercado, porque faltaram algumas informações. Por isso a faixa ficou mais larga.</p>',
+                'baixa': '<p class="ress">Calculado em parte com a média de mercado, porque faltaram informações. Esse valor é só uma indicação e pode ser bem diferente, para mais ou para menos. A faixa ficou mais larga por isso.</p>'}[a['conf']]
         val = (f'<div class="valor">{R(a["val"])}{"*" if a["conf"] != "alta" else ""}</div>{ress}<p>Faixa provável: {R(a["faixa"][0])} a {R(a["faixa"][1])}. É a média de dois métodos de avaliação:</p>'
                f'<div class="metodos"><div class="met"><div class="k">Múltiplo de lucro</div><div class="v">{R(a["val_mult"])}</div>'
                f'<div class="e">Lucro de verdade do ano ({R(a["lucro_ano"])}) vezes ' + f'{a["mult"]:.1f}'.replace('.', ',') + f'x, o quanto o mercado costuma pagar por empresas parecidas{div_txt}.</div></div>'
